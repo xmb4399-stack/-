@@ -1,0 +1,121 @@
+# 把这个项目推到 GitHub 之后，它会自动在云端 Linux 机器上编译出 APK。
+#
+# 用法：
+#   1. 推到 GitHub（main 或 master 分支）
+#   2. 打开仓库的 Actions 页面，等 "编译安卓 APK" 跑完（第一次约 40-60 分钟）
+#   3. 在跑完的记录页面最下方，下载 Artifacts 里的 elder-player-apk
+#   4. 解压得到 .apk，传到手机上安装
+#
+# 想换目标架构的话：Actions 页面点 "Run workflow"，选 archs 再跑。
+
+name: 编译安卓 APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      archs:
+        description: '目标 CPU 架构'
+        required: true
+        default: 'arm64-v8a'
+        type: choice
+        options:
+          - 'arm64-v8a'
+          - 'arm64-v8a,armeabi-v7a'
+          - 'armeabi-v7a'
+
+jobs:
+  build:
+    # 必须用 22.04：24.04 已经没有 libtinfo5，安卓 SDK 里的工具会缺依赖
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装 Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 安装系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git zip unzip autoconf automake libtool pkg-config \
+            zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 \
+            cmake libffi-dev libssl-dev build-essential ccache gettext \
+            libltdl-dev
+
+      - name: 安装 buildozer
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          # Cython 必须锁在 0.29 线，3.x 会把 python-for-android 编崩
+          pip install "cython==0.29.36" buildozer
+
+      - name: 显示环境信息
+        run: |
+          python --version
+          java -version
+          buildozer --version
+
+      # 缓存是可选的加速手段。命中就快很多，没命中或者失败都不影响编译。
+      - name: 恢复编译缓存
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: |
+            ~/.buildozer
+            .buildozer
+          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}-${{ github.run_number }}
+          restore-keys: |
+            buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}-
+            buildozer-${{ runner.os }}-
+
+      - name: 覆盖目标架构（仅手动触发时）
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          sed -i "s/^android.archs = .*/android.archs = ${{ github.event.inputs.archs }}/" buildozer.spec
+          grep '^android.archs' buildozer.spec
+
+      # libVLC 一个 AAR 里带了 4 种架构的解码库，每种压缩后都有 19MB 左右。
+      # 这一步按上面定好的 android.archs，把用不上的架构从打包列表里剔出去，
+      # 否则 APK 会因为塞进 x86 模拟器用的解码库而白白胖几十 MB。
+      - name: 按目标架构裁剪 libVLC 解码库
+        run: python tools/trim_libvlc_abis.py
+
+      - name: 开始编译
+        run: |
+          export ANDROID_HOME="$HOME/.buildozer/android/platform/android-sdk"
+          yes | buildozer -v android debug
+
+      - name: 列出产物
+        if: always()
+        run: |
+          ls -lh bin/ || true
+          echo
+          echo "=== APK 里各架构的 .so 体积（确认裁剪有没有生效）==="
+          for apk in bin/*.apk; do
+            [ -e "$apk" ] || continue
+            echo "--- $apk ---"
+            unzip -l "$apk" | awk '/lib\// {n=$4; s=$1; sub(/\/[^\/]*$/, "", n); a[n]+=s} END {for (k in a) printf "  %-18s %8.1f MB\n", k, a[k]/1048576}'
+          done
+          echo
+          echo "（上面应该只有 android.archs 里指定的那几个架构；"
+          echo "  如果出现了 x86 / x86_64，说明 packagingOptions 的裁剪没生效）"
+
+      - name: 上传 APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: elder-player-apk
+          path: bin/*.apk
+          if-no-files-found: error
+          retention-days: 90
