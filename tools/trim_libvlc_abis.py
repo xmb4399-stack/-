@@ -15,13 +15,30 @@ libvlc-all 这一个 AAR 里塞了 4 种 CPU 架构的解码库，实测解压�
 
 【它做什么】
 读 buildozer.spec 里的 android.archs，把不在里面的架构全部写进
-android.add_packaging_options 的排除列表。这样 APK 里只会留下
-目标架构的解码库。
+android.add_packaging_options。这样 APK 里只会留下目标架构的解码库。
 
 举个例子，android.archs = arm64-v8a 时，它会写成：
 
-    android.add_packaging_options = "exclude 'lib/x86/*.so'", \
-"exclude 'lib/x86_64/*.so'", "exclude 'lib/armeabi-v7a/*.so'"
+    android.add_packaging_options = jniLibs { excludes += ['lib/x86/**'] }, \
+jniLibs { excludes += ['lib/x86_64/**'] }, jniLibs { excludes += ['lib/armeabi-v7a/**'] }
+
+【为什么长这样 —— 两个坑，别改回去】
+
+1. **值里不能带外层双引号。**
+   buildozer 的 getlist() 就是 value.split(',')，不做去引号。
+   所以写 "exclude 'lib/x86/*.so'"（带双引号）时，插进 build.gradle 的
+   是一句 `"exclude 'lib/x86/*.so'"` —— 一个裸字符串，不是方法调用，
+   Gradle 直接静默忽略，一个 so 都排不掉。APK 会白白留着 4 套解码库（122MB）。
+
+2. **AGP 8 里 `packagingOptions { exclude ... }` 不再管 jniLibs。**
+   p4a 用的 AGP 是 8.11，老的 `exclude` 只当作资源排除，对 lib/*.so 无效。
+   AGP 8 要写成 `jniLibs { excludes += [...] }`。
+
+   实测（2026-11-09，run 42550582790）：改之前 APK 122MB 里
+   arm64-v8a 78.6MB + x86 47.3 + armeabi-v7a 38.7 + x86_64 49.5 全在。
+
+3. **值里不能带逗号。** 因为 getlist 就是按逗号切的，一个逗号 = 断成两条。
+   所以每条只排除一个架构，写成三条。
 
 【什么时候跑】
 GitHub Actions 在编译前会自动跑一次（见 .github/workflows/build-apk.yml）。
@@ -81,7 +98,11 @@ def main():
         print('要排除的架构  没有 —— 四种架构都要，APK 会很大')
 
     if drop:
-        items = ', '.join('"exclude \'lib/%s/*.so\'"' % a for a in drop)
+        # 注意三件事（详见文件开头的说明）：
+        #   - 不能带外层双引号，getlist() 不去引号，会把值原样塞进 gradle
+        #   - 不能有逗号，getlist 按逗号切分，一个逗号会断成两条
+        #   - AGP 8 要写 jniLibs { excludes += ... }，老的 exclude 不管 jniLibs
+        items = ', '.join("jniLibs { excludes += 'lib/%s/**' }" % a for a in drop)
         line = 'android.add_packaging_options = %s' % items
     else:
         line = '# android.add_packaging_options = （所有架构都要，不需要排除）'
