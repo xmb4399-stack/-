@@ -1,0 +1,20 @@
+# 给 python-for-android 用的 pip 约束文件（CI 里通过 PIP_CONSTRAINT 环境变量生效）
+#
+# 为什么需要它：
+#   kivy 的编译配方会顺带引入 requests 这个依赖。
+#   requests 从 2.28 开始依赖 charset-normalizer，而 charset-normalizer
+#   带 C 扩展，不属于纯 Python 包。
+#   python-for-android 的「纯 Python 模块」环节会把它的判定搞错：给安卓目标
+#   编出一个 cp314-cp314-android_24_arm64_v8a 轮子，然后用电脑上（x86_64
+#   Linux）的 pip 去安装，pip 直接拒绝：
+#       ERROR: charset_normalizer-3.5.2-cp314-cp314-android_24_arm64_v8a.whl
+#              is not a supported wheel on this platform
+#   结果整个编译在第 11 分钟失败。
+#
+# 做法：
+#   把 requests 钉在仍然使用 chardet（纯 Python 实现）的最后一个版本，
+#   charset-normalizer 就完全不会进入这一次依赖解析，问题绕过。
+#
+# 什么时候可以删掉：等 python-for-android 修好这个误判，就可以删。
+# 删之前先在 CI 里试跑一次，确认不再报 is not a supported wheel。
+requests<2.28
