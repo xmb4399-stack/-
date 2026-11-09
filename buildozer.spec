@@ -75,10 +75,17 @@ android.gradle_dependencies = org.videolan.android:libvlc-all:3.6.0
 # x86 系列手机用不上；armeabi-v7a 是 32 位老机器的，archs 里既然没编
 # 这个架构，留着也是白占体积。
 #
+# ⚠️ 三个必须遵守的写法（2026-11-09 实测踩过，改之前先读 tools/trim_libvlc_abis.py 开头）：
+#   1. 值里**不能带外层双引号**。buildozer 的 getlist() 只按逗号切、不去引号，
+#      带引号的话插进 build.gradle 的是一句裸字符串，Gradle 静默忽略 → 一个 so 都排不掉。
+#   2. 必须写 `jniLibs { excludes += ... }`。p4a 用的 AGP 8.11 里，
+#      老的 `exclude 'lib/x86/*.so'` 只当资源排除，对 jniLibs 无效。
+#   3. **不能有逗号**（getlist 按逗号切，一个逗号断成两条），所以一条只排一个架构。
+#
 # ⚠️ 改了 android.archs 就要同步改这一行，否则应用会因为缺少对应架构
 #    的解码库而打不开。用 GitHub Actions 编译的话不用手动改 ——
 #    工作流会先跑 tools/trim_libvlc_abis.py 按 archs 自动生成这一行。
-android.add_packaging_options = "exclude 'lib/armeabi-v7a/*.so'", "exclude 'lib/x86/*.so'", "exclude 'lib/x86_64/*.so'"
+android.add_packaging_options = jniLibs { excludes += 'lib/armeabi-v7a/**' }, jniLibs { excludes += 'lib/x86/**' }, jniLibs { excludes += 'lib/x86_64/**' }
 
 # targetSdk 33 才有 READ_MEDIA_VIDEO；minapi 24 覆盖 Android 7.0 以上
 android.api = 33
