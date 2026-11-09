@@ -13,6 +13,15 @@ name: 编译安卓 APK
 on:
   push:
     branches: [main, master]
+    # 只有下面这些内容变了才编译。
+    # 好处：改 README、改这份脚本、让机器人回写报错文件，都不会白白触发
+    # 一次几十分钟的编译。要强制编译就手动点 Run workflow。
+    paths:
+      - 'buildozer.spec'
+      - 'ci-constraints.txt'
+      - '**.py'
+      - 'assets/**'
+      - 'tools/**'
   workflow_dispatch:
     inputs:
       archs:
@@ -24,6 +33,10 @@ on:
           - 'arm64-v8a'
           - 'arm64-v8a,armeabi-v7a'
           - 'armeabi-v7a'
+
+permissions:
+  contents: write
+  actions: read
 
 jobs:
   build:
@@ -65,6 +78,8 @@ jobs:
           python --version
           java -version
           buildozer --version
+          echo "--- pip 约束文件 ---"
+          cat ci-constraints.txt || echo "没有约束文件"
 
       # 缓存是可选的加速手段。命中就快很多，没命中或者失败都不影响编译。
       - name: 恢复编译缓存
@@ -92,9 +107,45 @@ jobs:
         run: python tools/trim_libvlc_abis.py
 
       - name: 开始编译
+        # PIP_CONSTRAINT 让 python-for-android 内部的每一次 pip 都读这个约束文件。
+        # 没有它，kivy 依赖链里的 charset-normalizer 会让编译在
+        # "is not a supported wheel on this platform" 处失败（详见 ci-constraints.txt）。
+        env:
+          PIP_CONSTRAINT: ${{ github.workspace }}/ci-constraints.txt
         run: |
           export ANDROID_HOME="$HOME/.buildozer/android/platform/android-sdk"
-          yes | buildozer -v android debug
+          # 输出写进文件，失败时下面的步骤能把它摘出来写回仓库
+          yes | buildozer -v android debug > /tmp/buildozer.log 2>&1
+          status=$?
+          echo "buildozer 退出码=$status"
+          tail -40 /tmp/buildozer.log
+          exit $status
+
+      # 失败时把报错写回仓库，方便事后（不用登录、不用下载日志）直接查原因
+      - name: 失败时记录报错
+        if: failure()
+        run: |
+          set +e
+          {
+            echo "# 编译失败摘要"
+            echo
+            echo "时间：$(date -u '+%Y-%m-%d %H:%M UTC')   提交：${{ github.sha }}"
+            echo
+            echo "## buildozer 输出的最后 200 行"
+            echo '```'
+            tail -200 /tmp/buildozer.log
+            echo '```'
+            echo
+            echo "## 含报错字样的行"
+            echo '```'
+            grep -nEi "error|failed|exception|traceback|no such file|cannot find|not found" /tmp/buildozer.log | tail -150
+            echo '```'
+          } > ci-last-error.md
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@users.noreply.github.com"
+          git add ci-last-error.md
+          git commit -m "CI：记录编译失败原因 [skip ci]" || echo "没有变化"
+          git push || echo "没有要推的内容"
 
       - name: 列出产物
         if: always()
