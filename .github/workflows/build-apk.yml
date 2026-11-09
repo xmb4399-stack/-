@@ -38,6 +38,15 @@ permissions:
   contents: write
   actions: read
 
+# 同一个分支同时只跑一个编译。
+# 为什么要加：一次推多个文件会产生多个 commit，每个 commit 都触发一次编译，
+# 而两次编译的 actions/cache key 是一样的（key 里只有 buildozer.spec 的哈希），
+# 同时跑会互相踩缓存 —— 实测有一半概率在「开始编译」那一步挂掉。
+# 加了这个之后，后一次会自动取消前一次，只留最后一次的结果。
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     # 必须用 22.04：24.04 已经没有 libtinfo5，安卓 SDK 里的工具会缺依赖
