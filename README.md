@@ -6,7 +6,7 @@
 播放内核换成了 **libVLC**，所以 RMVB / WMV / AVI / FLV 这些安卓系统解不了的老格式
 也能直接播放（详见下面「手机能放哪些格式」）。
 
-> **安装包会比一般小应用大一些（40～60MB）**，因为里面带了完整的解码库——
+> **安装包会比一般小应用大一些（实测 58MB）**，因为里面带了完整的解码库——
 > 这也是 MX Player、VLC 这类「什么都能放」的播放器体积都很大的原因。
 > 如果你不在意格式支持、只想要个小包，见常见问题里的「如何去掉 VLC 内核」。
 
@@ -31,13 +31,24 @@
    - **把 `Keep this code private` 取消勾选**（公开仓库编译时间免费且无限）
    - 点 `Publish repository`
 
-**方式 B：网页上传**
+**方式 B：网页上传（有坑，见下面第 4 点）**
 
 1. 打开 https://github.com/new ，起个名字，创建空仓库
 2. 进入仓库，点 `Add file → Upload files`
 3. 把 `elder-video-player` 文件夹里的**所有内容**拖进去（注意：要拖文件夹里面的东西，
    不是拖 `elder-video-player` 这一层）
 4. 点 `Commit changes`
+
+> ⚠️ **网页上传会跳过所有「点开头」的文件夹**，`.github` 和 `.gitignore` 都传不上去。
+> 少了 `.github`，Actions 页面只会显示一堆推荐模板、没有「编译安卓 APK」、也就没有黄点。
+>
+> 补救办法（两分钟）：打开
+> `https://github.com/你的用户名/你的仓库名/new/main` ，
+> 在文件名框里原样输入 `.github/workflows/build-apk.yml`（输入斜杠会自动变成文件夹），
+> 再把本仓库里 `.github/workflows/build-apk.yml` 的内容整段粘进去，点 `Commit changes`。
+>
+> 传完到仓库首页确认一下：能看到 `.github` 这个文件夹就对了。
+> 用方式 A（GitHub Desktop）不会有这个问题。
 
 ### 第 2 步：等它自动编译
 
@@ -46,7 +57,9 @@
 1. 打开你的仓库页面，点上面的 **Actions** 标签
 2. 会看到一条 `编译安卓 APK` 正在跑（黄色小圆点在转）
 3. **第一次编译大约 40～60 分钟**（要下载 Android SDK 和 NDK，只有第一次慢）
-   之后的编译因为有缓存会快一些
+   之后的编译因为有缓存会快很多 —— 实测第二次只用了 **12 分钟**
+4. 改 README、改文档这类**不会**触发编译；只有源码和 `buildozer.spec` 变了才编译。
+   想手动重跑就点右边的 `Run workflow`
 
 ### 第 3 步：下载 APK
 
@@ -251,6 +264,7 @@ elder-video-player/
 │   ├── icon.png               应用图标
 │   └── presplash.png          启动图
 ├── buildozer.spec             打包配置
+├── ci-constraints.txt         云端编译用的 pip 约束（绕开上游依赖 bug，别删）
 ├── .github/workflows/
 │   └── build-apk.yml          云端自动编译
 └── tools/
@@ -337,6 +351,16 @@ python main.py                 # 直接运行
 第一次编译失败最常见的原因是网络抖动（要下载 1GB 多的 Android SDK）。
 到 Actions 页面点 `Re-run all jobs` 重试一次，通常就好了。
 
+**不用下载日志也能查原因**：编译失败时，工作流会自动把最后 200 行报错写进仓库根目录的
+`ci-last-error.md`，打开那个文件就能看到红字在哪。把这个文件的内容发我即可。
+
+> 已知会被修好的一个坑：报错里出现
+> `charset_normalizer-...-android_24_arm64_v8a.whl is not a supported wheel on this platform`。
+> 这是 python-for-android 上游把带 C 扩展的包误判成「纯 Python」导致的，
+> **和你的项目无关**。仓库里的 `ci-constraints.txt` 已经把 `requests` 钉在 2.28 之前绕开了。
+> 如果哪天它又冒出来，检查工作流的「开始编译」那一步是不是还带着
+> `PIP_CONSTRAINT: ${{ github.workspace }}/ci-constraints.txt`。
+
 **Q：装的时候提示「应用未安装」？**
 多半是 CPU 架构不对。按上面的方法编译一个 `armeabi-v7a` 版本再试。
 
@@ -368,9 +392,15 @@ python main.py                 # 直接运行
 
 是。libVLC 的解码库本身压缩后还有 19MB 左右一个架构，
 默认只保留 `arm64-v8a`（2016 年后的手机都是这个），
-把用不上的 `x86` / `x86_64` / `armeabi-v7a` 剔除掉了，省下约 59MB。
+把用不上的 `x86` / `x86_64` / `armeabi-v7a` 剔除掉了，省下约 60MB。
 
-即便如此，APK 大概也会在 **40～60MB** —— 换来的是所有主流格式免转码直接放。
+实测：不裁剪是 **122MB**（4 种架构全在），裁剪后 **58MB** ——
+换来的是所有主流格式免转码直接放。
+
+> 这个裁剪依赖 `buildozer.spec` 里的 `android.add_packaging_options`
+> 配合 AGP 8 的 `jniLibs { excludes += ... }` 写法，写法有三个坑，
+> 详见 `buildozer.spec` 里那段注释和 `tools/trim_libvlc_abis.py` 开头。
+> **别把它改回 `exclude 'lib/x86/*.so'` 那种老写法**，改回去 APK 会默默变回 122MB。
 如果不想要这个体积，把 `buildozer.spec` 里的
 `android.gradle_dependencies` 那一行删掉、重新编译即可，
 App 会自动回到系统播放器模式（`elder_vlc.py` 探测不到就降级，不用改别的）。
